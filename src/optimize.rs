@@ -133,14 +133,8 @@ fn cie_lab(cs: &RgbColorSpace, p: &mut [f64; 3]) {
 
 fn gauss_newton(cs: &RgbColorSpace, rgb: [f64; 3], coeffs: &mut [f64; 3], it: usize) -> bool {
     let mut r;
-    let mut residuals = vec![];
-    let mut jacobians = vec![];
     for _ in 0..it {
         let residual = eval_residual(cs, *coeffs, rgb);
-        let jac = eval_jacobian(cs, *coeffs, rgb);
-        residuals.push(residual);
-        jacobians.push(jac);
-
         let mut jac = eval_jacobian(cs, *coeffs, rgb);
         let p = jac.precompute(1e-15);
         if p.is_none() {
@@ -180,20 +174,22 @@ unsafe impl<T> Sync for SendPtr<T> {}
 fn parallel_for<F: Fn(usize) + Send + Sync>(count: usize, f: F) {
     let cnt = AtomicUsize::new(0);
     let num_threads = std::thread::available_parallelism()
-        .map(|x| x.get())
+        .map(|n| n.get())
         .unwrap_or(1);
-    let chunk_size = (count / (8 * num_threads)).max(1);
+    let chunk_size = (count / (4 * num_threads)).max(1);
     let threads = (0..num_threads)
         .map(|_| {
-            let cnt: &'static AtomicUsize = unsafe { std::mem::transmute(&cnt) };
             let f = &f as *const F as usize;
+            let cnt = &cnt as *const AtomicUsize as usize;
             std::thread::spawn(move || loop {
-                let f = unsafe { std::mem::transmute::<usize, &F>(f) };
+                let f = unsafe { &*(f as *const F) };
+                let cnt = unsafe { &*(cnt as *const AtomicUsize) };
                 let i = cnt.fetch_add(chunk_size, Ordering::Relaxed);
                 if i >= count {
                     break;
                 }
-                for j in i..(i + chunk_size).min(count) {
+                let end = (i + chunk_size).min(count);
+                for j in i..end {
                     f(j);
                 }
             })
@@ -209,78 +205,80 @@ pub fn optimize(cs: &RgbColorSpace, res: usize) -> Rgb2SpecTable {
     let buf_size = 3 * 3 * res * res * res;
     let mut out = vec![0.0; buf_size];
     let it = 15;
+    
+    let out_ptr = SendPtr(out.as_mut_ptr());
+    parallel_for(res * 3, |tid| {
+        let l = tid / res;
+        let j = tid % res;
 
-    for l in 0..3 {
-        let out_ptr = SendPtr(out.as_mut_ptr());
-        parallel_for(res, |j| {
-            let out = unsafe { std::slice::from_raw_parts_mut(out_ptr.get(), buf_size) };
-            let y = j as f64 / (res - 1) as f64;
-            for i in 0..res {
-                let x = i as f64 / (res - 1) as f64;
-                let mut coeffs = [0.0; 3];
-                let mut rgb = [0.0; 3];
+        let out = unsafe { std::slice::from_raw_parts_mut(out_ptr.get(), buf_size) };
+        let y = j as f64 / (res - 1) as f64;
+        for i in 0..res {
+            let x = i as f64 / (res - 1) as f64;
+            let mut coeffs = [0.0; 3];
+            let mut rgb = [0.0; 3];
 
-                let start = res / 5;
+            let start = res / 5;
 
-                for k in start..res {
-                    let b = scale[k] as f64;
-                    rgb[l] = b;
-                    rgb[(l + 1) % 3] = x * b;
-                    rgb[(l + 2) % 3] = y * b;
+            for k in start..res {
+                let b = scale[k] as f64;
+                rgb[l] = b;
+                rgb[(l + 1) % 3] = x * b;
+                rgb[(l + 2) % 3] = y * b;
 
-                    if !gauss_newton(cs, rgb, &mut coeffs, it) {
-                        println!(
-                            "solve failed for l:{} i:{}, j:{}, k:{}, rgb:{:.5?}",
-                            l, i, j, k, rgb
-                        );
-                    }
-
-                    let c0 = CIE_LAMBDA_MIN;
-                    let c1 = 1.0 / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN);
-
-                    let a = coeffs[0];
-                    let b = coeffs[1];
-                    let c = coeffs[2];
-
-                    let idx = ((l * res + k) * res + j) * res + i;
-
-                    out[3 * idx + 0] = (a * sqr(c1)) as f32;
-                    out[3 * idx + 1] = (b * c1 - 2.0 * a * c0 * sqr(c1)) as f32;
-                    out[3 * idx + 2] = (c - b * c0 * c1 + a * sqr(c0 * c1)) as f32;
+                if !gauss_newton(cs, rgb, &mut coeffs, it) {
+                    println!(
+                        "solve failed for l:{} i:{}, j:{}, k:{}, rgb:{:.5?}",
+                        l, i, j, k, rgb
+                    );
                 }
 
-                coeffs.fill(0.0);
+                let c0 = CIE_LAMBDA_MIN;
+                let c1 = 1.0 / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN);
 
-                for k in (0..=start).rev() {
-                    let b = scale[k] as f64;
+                let a = coeffs[0];
+                let b = coeffs[1];
+                let c = coeffs[2];
 
-                    rgb[l] = b;
-                    rgb[(l + 1) % 3] = x * b;
-                    rgb[(l + 2) % 3] = y * b;
+                let idx = ((l * res + k) * res + j) * res + i;
 
-                    if !gauss_newton(cs, rgb, &mut coeffs, it) {
-                        println!(
-                            "solve failed for l:{} i:{}, j:{}, k:{}, rgb:{:.5?}",
-                            l, i, j, k, rgb
-                        );
-                    }
-
-                    let c0 = CIE_LAMBDA_MIN;
-                    let c1 = 1.0 / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN);
-
-                    let a = coeffs[0];
-                    let b = coeffs[1];
-                    let c = coeffs[2];
-
-                    let idx = ((l * res + k) * res + j) * res + i;
-
-                    out[3 * idx + 0] = (a * sqr(c1)) as f32;
-                    out[3 * idx + 1] = (b * c1 - 2.0 * a * c0 * sqr(c1)) as f32;
-                    out[3 * idx + 2] = (c - b * c0 * c1 + a * sqr(c0 * c1)) as f32;
-                }
+                out[3 * idx + 0] = (a * sqr(c1)) as f32;
+                out[3 * idx + 1] = (b * c1 - 2.0 * a * c0 * sqr(c1)) as f32;
+                out[3 * idx + 2] = (c - b * c0 * c1 + a * sqr(c0 * c1)) as f32;
             }
-        });
-    }
+
+            coeffs.fill(0.0);
+
+            for k in (0..=start).rev() {
+                let b = scale[k] as f64;
+
+                rgb[l] = b;
+                rgb[(l + 1) % 3] = x * b;
+                rgb[(l + 2) % 3] = y * b;
+
+                if !gauss_newton(cs, rgb, &mut coeffs, it) {
+                    println!(
+                        "solve failed for l:{} i:{}, j:{}, k:{}, rgb:{:.5?}",
+                        l, i, j, k, rgb
+                    );
+                }
+
+                let c0 = CIE_LAMBDA_MIN;
+                let c1 = 1.0 / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN);
+
+                let a = coeffs[0];
+                let b = coeffs[1];
+                let c = coeffs[2];
+
+                let idx = ((l * res + k) * res + j) * res + i;
+
+                out[3 * idx + 0] = (a * sqr(c1)) as f32;
+                out[3 * idx + 1] = (b * c1 - 2.0 * a * c0 * sqr(c1)) as f32;
+                out[3 * idx + 2] = (c - b * c0 * c1 + a * sqr(c0 * c1)) as f32;
+            }
+        }
+    });
+
     Rgb2SpecTable {
         data: out,
         res,

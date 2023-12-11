@@ -10,6 +10,7 @@ fn main() {
         );
         std::process::exit(1);
     }
+    let res = args[1].parse::<usize>().unwrap();
     let gamut = match args[3].as_str() {
         "sRGB" => Gamut::SRgb,
         "eRGB" => Gamut::ERgb,
@@ -24,8 +25,10 @@ fn main() {
         }
     };
     let cs = RgbColorSpace::from_gamut(gamut);
-    let table = optimize(&cs, 64);
-    let mut file = std::fs::File::create("out.spec").unwrap();
+    println!("Optimizing {}x{}x{} table", res, res, res);
+    let table = optimize(&cs, res);
+    println!("Writing to {}", args[2]);
+    let mut file = std::fs::File::create(&args[2]).unwrap();
     let data = unsafe {
         std::slice::from_raw_parts(
             table.data.as_ptr() as *const u8,
