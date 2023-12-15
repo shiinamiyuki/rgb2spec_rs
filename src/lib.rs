@@ -218,7 +218,7 @@ pub const ERGB_TO_XYZ: [[f64; 3]; 3] = [
 ];
 
 #[inline]
-pub fn cie_interp(data: &[f64], mut x: f64) -> f64 {
+pub(crate) fn cie_interp(data: &[f64], mut x: f64) -> f64 {
     x -= CIE_LAMBDA_MIN;
     x *= (CIE_SAMPLES - 1) as f64 / (CIE_LAMBDA_MAX - CIE_LAMBDA_MIN);
     let offset = (x.floor() as isize).clamp(0, CIE_SAMPLES as isize - 2) as usize;
