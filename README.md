@@ -1,2 +1,2 @@
-# Rust port of rgb2spec in *A Low-Dimensional Function Space for Efficient Spectral Upsampling*
+# Rust port of rgb2spec in the paper *A Low-Dimensional Function Space for Efficient Spectral Upsampling*
 Based on C++ code from [PBRT-v4](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/cmd/rgb2spec_opt.cpp)
